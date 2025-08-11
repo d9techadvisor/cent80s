@@ -15,20 +15,53 @@
       align-items:center;
       justify-content:space-around;
       width:100%;
-      max-width:600px;
-      margin-top:8px;
+      max-width:700px;
+      padding:10px 14px;
       position:fixed;
-      bottom:calc(10px + env(safe-area-inset-bottom));
+      bottom:calc(52px + env(safe-area-inset-bottom)); /* sits above hint bar */
       left:50%;
       transform:translateX(-50%);
       z-index:9999;
       pointer-events:none;
+      background:none;
+      border-radius:10px 10px 0 0;
+      display:grid;
+      grid-template-columns:1fr auto 1fr;
     }
     #mobileControls > * { pointer-events:auto; }
+    /* Full-height bottom fade from top of controls */
+    :root { --controls-top: 100vh; }
+    #mobileControls::before {
+      content:'';
+      position:fixed;
+      left:0;
+      right:0;
+      top:var(--controls-top);
+      bottom:0;
+      background:linear-gradient(to bottom, rgba(0,0,0,0.25), rgba(0,0,0,0.55));
+      pointer-events:none;
+      z-index:-1;
+    }
     #pad{width:120px;height:120px;border-radius:50%;background:#1a1a1a;border:1px solid #444;position:relative;touch-action:none}
     #pad .nub{width:44px;height:44px;border-radius:50%;background:#2b2b2b;border:1px solid #555;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
-    #fireBtn{min-width:55px;height:55px;border-radius:50%;background:#a22;border:1px solid #700;color:#fff;font-weight:700;font-size:12px;touch-action:none}
-    #fireBtn:active{filter:brightness(1.1)}
+    #pad:active{box-shadow:0 0 12px rgba(255,255,255,.08) inset;}
+    #fireBtn{min-width:60px;height:60px;border-radius:50%;background:#a22;border:1px solid #700;color:#fff;font-weight:700;font-size:13px;touch-action:none;box-shadow:0 2px 8px rgba(255,0,0,.25);opacity:.6}
+    #fireBtn:active{filter:brightness(1.1);box-shadow:0 0 14px rgba(255,60,60,.55);opacity:1}
+    /* Hint text */
+    #mobileHint{opacity:.7;font-size:12px;text-align:center}
+
+    /* Mobile-only placement for hint at bottom */
+    @media (max-width:700px){
+      #mobileHint{
+        position:fixed;
+        left:0; right:0;
+        bottom:env(safe-area-inset-bottom);
+        padding:6px 8px;
+        text-align:center;
+        z-index:9998;
+      }
+    }
+
     @media (max-width: 700px){
       #mobileControls{display:flex}
       #hud{gap:10px}
@@ -36,7 +69,8 @@
       #wrap{padding:8px}
       button{padding:8px 10px}
       #pad{width:100px;height:100px;}
-      #fireBtn{min-width:45px;height:45px;font-size:10px;}
+      #fireBtn{min-width:60px;height:60px;font-size:13px;}
+      #wrap{padding-bottom:calc(150px + env(safe-area-inset-bottom));}
     }
     #hud{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-weight:600}
     button{background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:6px 10px;cursor:pointer}
@@ -61,7 +95,7 @@
       <button id="pauseBtn" aria-label="Pause">PAUSE</button>
       <button id="fireBtn" aria-label="Fire">FIRE</button>
     </div>
-    <div style="opacity:.7;font-size:12px">Arrows/WASD or Pad to move • Space/FIRE to shoot</div>
+    <div id="mobileHint">Arrows/WASD or Pad to move • Space/FIRE to shoot</div>
   </div>
 
 <script>
@@ -85,7 +119,24 @@
   });
   const W = canvas.width, H = canvas.height;
   const grid = 16;
-  const playHeight = H * 0.8;
+  let playHeight = H * 0.8;
+  const basePlayHeight = playHeight;
+  let uiBottomOffset = 0;
+  function recomputePlayHeight(){
+    // How many CSS pixels of the canvas are overlapped by the fixed controls?
+    const controls = document.getElementById('mobileControls');
+    if(!controls){ uiBottomOffset = 0; playHeight = basePlayHeight; return; }
+    const cRect = canvas.getBoundingClientRect();
+    const r = controls.getBoundingClientRect();
+    // Update CSS variable for fade start position
+    document.documentElement.style.setProperty('--controls-top', r.top + 'px');
+    const overlapPx = Math.max(0, cRect.bottom - r.top); // portion of canvas behind controls
+    const scale = canvas.height / cRect.height;          // CSS px -> canvas px
+    uiBottomOffset = overlapPx * scale + 6;              // small padding
+    // Raise the playable floor so the ship stays fully above the overlay
+    playHeight = Math.min(H - grid - uiBottomOffset, basePlayHeight);
+  }
+  window.addEventListener('resize', recomputePlayHeight);
   const scoreEl = document.getElementById('score');
   const livesEl = document.getElementById('lives');
   const levelEl = document.getElementById('level');
@@ -305,8 +356,10 @@
       const max = r; // max radius for full deflection
       const mag = Math.hypot(x,y) || 1;
       const clamped = Math.min(mag, max);
-      const dx = (x/mag) * clamped / max;
-      const dy = (y/mag) * clamped / max;
+      let dx = (x/mag) * clamped / max;
+      let dy = (y/mag) * clamped / max;
+      // 10% dead-zone to avoid drift
+      if (clamped/max < 0.10){ dx = 0; dy = 0; }
       return {dx, dy, px:(dx*max), py:(dy*max)};
     };
     const start = (x,y)=>{ active=true; const v=getPos(x,y); setMoveFromVector(v.dx, v.dy); if(padNub){ padNub.style.transform=`translate(calc(-50% + ${v.px}px), calc(-50% + ${v.py}px))`; } };
@@ -767,6 +820,7 @@
   window.gameDebug = { selfTest, start };
   resetBtn.onclick = ()=> start(true);
   start(true);
+  recomputePlayHeight();
   selfTest();
   if (pauseBtn){
     pauseBtn.addEventListener('click', ()=>{
@@ -776,6 +830,8 @@
     });
   }
   requestAnimationFrame(loop);
+  window.addEventListener('orientationchange', ()=> setTimeout(recomputePlayHeight, 50));
+  window.addEventListener('load', ()=> setTimeout(recomputePlayHeight, 50));
 })();
 </script>
 </body>
