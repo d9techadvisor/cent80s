@@ -7,7 +7,20 @@
   <style>
     html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     #wrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px}
-    canvas{background:#000;box-shadow:0 0 0 2px #333 inset, 0 8px 30px #000}
+    canvas{background:#000;box-shadow:0 0 0 2px #333 inset, 0 8px 30px #000;touch-action:none}
+    /* Mobile controls */
+    #mobileControls{display:none;gap:16px;align-items:center;justify-content:space-between;width:100%;max-width:600px;margin-top:8px}
+    #pad{width:120px;height:120px;border-radius:50%;background:#1a1a1a;border:1px solid #444;position:relative;touch-action:none}
+    #pad .nub{width:44px;height:44px;border-radius:50%;background:#2b2b2b;border:1px solid #555;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+    #fireBtn{min-width:110px;height:110px;border-radius:50%;background:#262;border:1px solid #474;color:#eee;font-weight:700;font-size:16px;touch-action:none}
+    #fireBtn:active{filter:brightness(1.1)}
+    @media (max-width: 700px){
+      #mobileControls{display:flex}
+      #hud{gap:10px}
+      canvas{width:100%;height:auto}
+      #wrap{padding:8px}
+      button{padding:8px 10px}
+    }
     #hud{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-weight:600}
     button{background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:6px 10px;cursor:pointer}
     button:hover{background:#2a2a2a}
@@ -26,7 +39,11 @@
       <button id="toggleSfx" class="toggle on">SFX: On</button>
     </div>
     <canvas id="game" width="480" height="640"></canvas>
-    <div style="opacity:.7;font-size:12px">Arrows OR WASD to move • Space Bar to shoot</div>
+    <div id="mobileControls">
+      <div id="pad" aria-label="Move pad"><div class="nub"></div></div>
+      <button id="fireBtn" aria-label="Fire">FIRE</button>
+    </div>
+    <div style="opacity:.7;font-size:12px">Arrows/WASD or Pad to move • Space/FIRE to shoot</div>
   </div>
 
 <script>
@@ -37,6 +54,16 @@
   document.title = 'Cent80s v' + VERSION;
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
+  // Mobile elements
+  const pad = document.getElementById('pad');
+  const padNub = pad ? pad.querySelector('.nub') : null;
+  const fireBtn = document.getElementById('fireBtn');
+  // Prevent scroll/zoom gestures while interacting with canvas/controls
+  ['touchstart','touchmove','touchend','gesturestart'].forEach(ev=>{
+    document.addEventListener(ev, e=>{
+      if(e.target===canvas || e.target===pad || e.target===fireBtn){ e.preventDefault(); }
+    }, {passive:false});
+  });
   const W = canvas.width, H = canvas.height;
   const grid = 16;
   const playHeight = H * 0.8;
@@ -233,10 +260,54 @@
   function updateHUD(){ scoreEl.textContent=displayScore|0; livesEl.textContent=lives|0; levelEl.textContent=level|0; }
 
   // --- Input ---
+  function press(k){ keys.add(k); }
+  function release(k){ keys.delete(k); }
+
+  function setMoveFromVector(dx, dy){
+    // Clear existing WASD keys first
+    ['a','d','w','s','arrowleft','arrowright','arrowup','arrowdown'].forEach(release);
+    if(dx<-0.2) press('a'); else if(dx>0.2) press('d');
+    if(dy<-0.2) press('w'); else if(dy>0.2) press('s');
+  }
+
   window.addEventListener('keydown', e=>{ keys.add(e.key.toLowerCase()); if(e.key===' ') e.preventDefault(); });
   window.addEventListener('keyup', e=> keys.delete(e.key.toLowerCase()));
   function shoot(){ bullets.push({x:player.x, y:player.y-player.h/2, vy:-420}); sfxShoot(); }
   function collide(a,b,rad){ const dx=a.x-b.x, dy=a.y-b.y; return (dx*dx+dy*dy) <= (rad*rad); }
+
+  // --- Mobile controls ---
+  if (pad){
+    let active=false, cx=0, cy=0, r=50;
+    const getPos = (clientX, clientY)=>{
+      const rect = pad.getBoundingClientRect();
+      const x = clientX - (rect.left + rect.width/2);
+      const y = clientY - (rect.top + rect.height/2);
+      const max = r; // max radius for full deflection
+      const mag = Math.hypot(x,y) || 1;
+      const clamped = Math.min(mag, max);
+      const dx = (x/mag) * clamped / max;
+      const dy = (y/mag) * clamped / max;
+      return {dx, dy, px:(dx*max), py:(dy*max)};
+    };
+    const start = (x,y)=>{ active=true; const v=getPos(x,y); setMoveFromVector(v.dx, v.dy); if(padNub){ padNub.style.transform=`translate(calc(-50% + ${v.px}px), calc(-50% + ${v.py}px))`; } };
+    const move  = (x,y)=>{ if(!active) return; const v=getPos(x,y); setMoveFromVector(v.dx, v.dy); if(padNub){ padNub.style.transform=`translate(calc(-50% + ${v.px}px), calc(-50% + ${v.py}px))`; } };
+    const end   = ()=>{ active=false; setMoveFromVector(0,0); if(padNub){ padNub.style.transform='translate(-50%,-50%)'; } };
+
+    pad.addEventListener('pointerdown', e=>{ pad.setPointerCapture(e.pointerId); start(e.clientX, e.clientY); });
+    pad.addEventListener('pointermove', e=> move(e.clientX, e.clientY));
+    pad.addEventListener('pointerup',   end);
+    pad.addEventListener('pointercancel', end);
+  }
+
+  if (fireBtn){
+    let firing=false, fireTimer=null;
+    const start=()=>{ firing=true; press(' '); armAudio(); if(!fireTimer){ fireTimer=setInterval(()=> press(' '), 160); } };
+    const end=()=>{ firing=false; release(' '); if(fireTimer){ clearInterval(fireTimer); fireTimer=null; } };
+    fireBtn.addEventListener('pointerdown', e=>{ fireBtn.setPointerCapture(e.pointerId); start(); e.preventDefault(); });
+    fireBtn.addEventListener('pointerup',   end);
+    fireBtn.addEventListener('pointercancel', end);
+    fireBtn.addEventListener('pointerleave', end);
+  }
 
   // --- Update ---
   function update(dt){
