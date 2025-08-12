@@ -3,16 +3,47 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cent80s v1.5</title>
+  <title>Cent80s v1.42</title>
   <style>
-    html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-    #wrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px}
-    canvas{background:#000;box-shadow:0 0 0 2px #333 inset, 0 8px 30px #000}
+    html,body{margin:0;height:100%;overflow:hidden;background:#111;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    #wrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px;padding-top:var(--hud-h,56px);min-height:calc(100vh - var(--bottom-h,90px));box-sizing:border-box}
+    canvas{background:#000;box-shadow:0 0 0 2px #333 inset, 0 8px 30px #000;touch-action:none;image-rendering:pixelated;image-rendering:crisp-edges;display:block;margin-top:auto}
     #hud{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-weight:600}
     button{background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:6px 10px;cursor:pointer}
     button:hover{background:#2a2a2a}
     .toggle.on{border-color:#6c6}
     .toggle.off{opacity:.6;border-color:#555}
+    /* Fixed HUD */
+    #hud{position:fixed;top:0;left:0;right:0;z-index:10;padding:8px 12px;background:#111}
+
+    /* Bottom control bar (fixed) */
+    #bottomBar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#111}
+    #pad{width:120px;height:120px;border-radius:50%;background:#1a1a1a;border:1px solid #444;position:relative}
+    #pad .nub{width:44px;height:44px;border-radius:50%;background:#2b2b2b;border:1px solid #555;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+    .bottomButtons{display:flex;gap:12px;align-items:center}
+    #pauseBtn{padding:8px 12px}
+    #fireBtn{min-width:60px;height:60px;border-radius:50%;background:#a22;border:1px solid #700;color:#fff;font-weight:700}
+    #fireBtn:active{filter:brightness(1.1)}
+
+    /* Canvas responsive sizing: uniform scale, width ≤700, height min 120 (no max) */
+    :root{--bottom-h:90px}
+    canvas{max-width:480px}
+    /* Float hint above bottom bar so it doesn't reserve space */
+    #hint{position:fixed;left:0;right:0;bottom:calc(var(--bottom-h,90px) + 2px);text-align:center;pointer-events:none}
+    /* Compact bottom bar + hide hint on short viewports */
+    @media (max-height: 750px){
+      #hint{display:none}
+      #bottomBar{padding:6px 10px}
+      #pad{width:96px;height:96px}
+      #fireBtn{min-width:52px;height:52px;font-size:12px}
+      #pauseBtn{padding:6px 10px;font-size:12px}
+    }
+    @media (max-height: 620px){
+      #bottomBar{padding:4px 8px}
+      #pad{width:80px;height:80px}
+      #fireBtn{min-width:44px;height:44px;font-size:11px}
+      #pauseBtn{padding:5px 9px;font-size:11px}
+    }
   </style>
 </head>
 <body>
@@ -22,30 +53,77 @@
       <div>Lives: <span id="lives">3</span></div>
       <div>Level: <span id="level">1</span></div>
       <button id="reset">Reset</button>
-      <button id="toggleMusic" class="toggle on">Music: On</button>
-      <button id="toggleSfx" class="toggle on">SFX: On</button>
+      <button id="toggleVolume" class="toggle on" title="Sound">🔊</button>
     </div>
-    <canvas id="game" width="480" height="640"></canvas>
-    <div style="opacity:.7;font-size:12px">Arrows OR WASD to move • Space Bar to shoot</div>
+    <canvas id="game" width="480" height="960"></canvas>
+    <div id="bottomBar">
+      <div id="pad" aria-label="Move pad"><div class="nub"></div></div>
+      <div class="bottomButtons">
+        <button id="pauseBtn" aria-label="Pause">PAUSE</button>
+        <button id="fireBtn" aria-label="Fire">FIRE</button>
+      </div>
+    </div>
+    <div id="hint" style="opacity:.7;font-size:12px">Arrows OR WASD to move • Space Bar to shoot</div>
   </div>
 
 <script>
 // v1.0 JavaScript game logic (original working version with player–mushroom collision, working audio, and autofire)
 (function() {
   // --- Canvas & HUD ---
-  const VERSION = '1.5';
+  const VERSION = '1.42';
   document.title = 'Cent80s v' + VERSION;
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
+  function fitCanvas(){
+    const bottom = document.getElementById('bottomBar');
+    const hud = document.getElementById('hud');
+    const hudH = hud ? hud.getBoundingClientRect().height : 0;
+    const bottomH = bottom ? bottom.getBoundingClientRect().height : 0;
+    document.documentElement.style.setProperty('--hud-h', hudH + 'px');
+    document.documentElement.style.setProperty('--bottom-h', bottomH + 'px');
+    const vw = Math.min(480, document.documentElement.clientWidth - 20); // clamp width to 480 max
+    const s  = Math.max(120 / H, vw / W);                                  // min height = 120px
+    canvas.style.width  = (W * s) + 'px';
+    canvas.style.height = (H * s) + 'px';
+  }
   const grid = 16;
-  const playHeight = H * 0.8;
+  // Player movement band: 100px normally; on very short windows fallback to 50px
+  const playerBandMin  = 50;   // smallest allowed band
+  const playerBandMax  = 100;  // normal band height
+  let   playerBand     = playerBandMax;
+
+  // Top of player band (old playHeight) and an explicit floor Y in canvas pixels
+  let playHeight = H - playerBand; // top edge of player area
+  let floorY     = H;              // bottom edge (where floor line is drawn)
+
+  function recomputePlayHeight(){
+    const rect = canvas.getBoundingClientRect();
+    const controls = document.getElementById('bottomBar');
+    const controlsTop = controls ? controls.getBoundingClientRect().top : window.innerHeight;
+
+    // Determine which bottom applies in CSS px: canvas bottom, or bottom bar top if it overlaps
+    let usableBottomCss = rect.bottom;
+    if (controlsTop > rect.top && controlsTop < rect.bottom) usableBottomCss = controlsTop;
+
+    // Map CSS px -> canvas px
+    const scale = canvas.height / rect.height;
+    floorY = (usableBottomCss - rect.top) * scale; // explicit floor in canvas coords
+
+    // Player band: 100px normally; if that would be more than half of the visible region, use 50px
+    const visible = Math.max(grid*2, floorY); // canvas px from top to bottom of visible area
+    playerBand = (playerBandMax > visible * 0.5) ? playerBandMin : playerBandMax;
+
+    // Top of the player movement region
+    playHeight = Math.max(grid, Math.min(floorY - playerBand, H - playerBand));
+  }
   const scoreEl = document.getElementById('score');
   const livesEl = document.getElementById('lives');
   const levelEl = document.getElementById('level');
   const resetBtn = document.getElementById('reset');
-  const toggleMusicBtn = document.getElementById('toggleMusic');
-  const toggleSfxBtn = document.getElementById('toggleSfx');
+  const volumeBtn = document.getElementById('toggleVolume');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const fireBtn = document.getElementById('fireBtn');
 
   // --- Error overlay ---
   let crashedMsg = null;
@@ -63,18 +141,44 @@
     musicGain = AC.createGain(); musicGain.gain.value = 0.35; musicGain.connect(masterGain);
     sfxGain   = AC.createGain(); sfxGain.gain.value   = 0.9;  sfxGain.connect(masterGain);
   }
-  function setToggleStyle(btn,on){
-    btn.classList.toggle('on',on);
-    btn.classList.toggle('off',!on);
-    btn.textContent = (btn===toggleMusicBtn?'Music: ':'SFX: ') + (on?'On':'Off');
+  function updateVolumeUI(){
+    const on = (musicOn || sfxOn);
+    if (volumeBtn){
+      volumeBtn.classList.toggle('on', on);
+      volumeBtn.classList.toggle('off', !on);
+      volumeBtn.textContent = on ? '🔊' : '🔇';
+    }
   }
-  setToggleStyle(toggleMusicBtn, musicOn);
-  setToggleStyle(toggleSfxBtn, sfxOn);
-  toggleMusicBtn.onclick = ()=>{ musicOn=!musicOn; setToggleStyle(toggleMusicBtn,musicOn); if(musicGain) musicGain.gain.value = musicOn?0.35:0; };
-  toggleSfxBtn.onclick   = ()=>{ sfxOn=!sfxOn;   setToggleStyle(toggleSfxBtn,  sfxOn);   if(sfxGain)   sfxGain.gain.value   = sfxOn?0.9:0; };
+  updateVolumeUI();
+  if (volumeBtn){
+    volumeBtn.onclick = ()=>{
+      const offNow = (musicOn || sfxOn);
+      if (offNow){
+        musicOn=false; sfxOn=false;
+        if (musicGain) musicGain.gain.value=0;
+        if (sfxGain)   sfxGain.gain.value=0;
+        stopMusic();
+      } else {
+        musicOn=true; sfxOn=true; ensureAudio();
+        if (musicGain) musicGain.gain.value=0.35;
+        if (sfxGain)   sfxGain.gain.value=0.9;
+        if (!paused) startMusic();
+      }
+      updateVolumeUI();
+    };
+  }
+  let paused=false;
+  if (pauseBtn){
+    pauseBtn.onclick = ()=>{
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'RESUME' : 'PAUSE';
+      if (paused) stopMusic(); else if (musicOn) startMusic();
+    };
+  }
   function armAudio(){ ensureAudio(); if(AC.state==='suspended') AC.resume(); if(musicOn && !musicTimer) startMusic(); }
   window.addEventListener('pointerdown', armAudio);
   window.addEventListener('keydown', armAudio);
+  window.addEventListener('resize', ()=>{ fitCanvas(); recomputePlayHeight(); });
 
   // --- SFX helpers ---
   function envNote({freq=440, type='square', gain=0.5, attack=0.005, decay=0.08, sustain=0.15, release=0.08, dur=0.18, out=sfxGain}){
@@ -226,9 +330,59 @@
   function spiderDelayFor(level){ const max=Math.max(9 - level*0.6, 5.0); const min=Math.max(6 - level*0.5, 3.5); return rand(min,max); }
   function makePlayer(){ return {x:W/2, y:H-3*grid, w:20, h:18, speed:220, fireCD:0}; }
   function makeSegment(x,y,dir,isHead=false){ return {x,y,dir,isHead,alive:true}; }
-  function spawnMushrooms(count){ mushrooms=[]; const batch=[]; for(let i=0;i<count;i++){ const gx=randInt(0,(W/grid)-1); const gy=randInt(2,Math.floor((H/grid)-6)); if(Math.random()<0.1) continue; batch.push({x:gx*grid+grid/2, y:gy*grid+grid/2, hp:3, perm:false}); } balancePermanent(batch,0.20); mushrooms.push(...batch); }
+  function spawnMushrooms(count){
+    mushrooms = [];
+    const batch = [];
+
+    // Compute grid-row ranges for upper field and player band
+    const maxCols = Math.floor(W / grid) - 1;
+    const upperMinRow = 2;
+    const upperMaxRow = Math.max(3, Math.floor((playHeight / grid) - 2));
+
+    // Player band rows: from top of band down to **midpoint** (top half only)
+    const halfY = (playHeight + floorY) * 0.5;
+    const bandMinRow = Math.ceil((playHeight + grid) / grid);
+    const bandMaxRow = Math.floor((halfY - grid) / grid);
+    const bandHasRoom = bandMaxRow - bandMinRow >= 1; // at least ~1 row tall
+
+    // % allowed in player band = current level + 4
+    const pBand = Math.max(0, Math.min(1, (level + 4) / 100));
+
+    for (let i = 0; i < count; i++) {
+      const useBand = bandHasRoom && (Math.random() < pBand);
+
+      const gx = randInt(0, maxCols);
+      let gy;
+
+      if (useBand) {
+        gy = randInt(bandMinRow, bandMaxRow);
+      } else {
+        gy = randInt(upperMinRow, upperMaxRow);
+      }
+
+      // occasional hole in the field
+      if (Math.random() < 0.10) continue;
+
+      batch.push({ x: gx * grid + grid/2, y: gy * grid + grid/2, hp: 3, perm: false });
+    }
+
+    // Balance permanent rocks to target ratio (applies across both regions)
+    balancePermanent(batch, 0.20);
+    mushrooms.push(...batch);
+  }
   function buildCentipede(len){ centipede=[]; const y=grid/2; for(let i=0;i<len;i++){ const x=(W-grid/2)-i*grid; centipede.push(makeSegment(x,y,-1,i===0)); } }
-  function spawnSpider(){ const side=Math.random()<0.5?'L':'R'; const y=rand(playHeight+grid*1.5, H-grid*1.5); const x=(side==='L')?grid/2:W-grid/2; const scale=1 + 0.05*(level-1); const speed=(rand(90,140)+level*4)*scale; const vx=(side==='L'?1:-1)*speed; const vy=rand(-60,60)*scale; spiders.push({x,y,vx,vy,r:grid*0.6,alive:true}); }
+  function spawnSpider(){
+    const side = Math.random()<0.5 ? 'L' : 'R';
+    const minY = playHeight + grid*1.2;
+    const maxY = Math.max(minY + grid*1.5, floorY - grid*1.2);
+    const y = rand(minY, maxY);
+    const x = (side==='L') ? grid/2 : W-grid/2;
+    const scale = 1 + 0.05*(level-1);
+    const speed = (rand(90,140)+level*4) * scale;
+    const vx = (side==='L' ? 1 : -1) * speed;
+    const vy = rand(-60,60) * scale;
+    spiders.push({x,y,vx,vy,r:grid*0.6,alive:true});
+  }
   function start(resetAll=false){ if(resetAll){ score=0; lives=3; level=1; } gameOver=false; waveCleared=false; playerDead=false; deathTimer=0; gameOverMotifPlayed = false; player=makePlayer(); bullets=[]; spiders=[]; popups=[]; spiderTimer=0; spiderDelay=spiderDelayFor(level); displayScore=score; spawnMushrooms(28+level*4); buildCentipede(Math.min(12+level*2,24)); startMusic(); updateHUD(); }
   function updateHUD(){ scoreEl.textContent=displayScore|0; livesEl.textContent=lives|0; levelEl.textContent=level|0; }
 
@@ -241,6 +395,7 @@
   // --- Update ---
   function update(dt){
     if(gameOver) return;
+    if (paused) return;
     if (playerDead) {
       deathTimer -= dt;
       if (deathTimer <= 0) {
@@ -292,7 +447,9 @@
     player.x = nextX;
     player.y = nextY;
     player.x = Math.max(grid/2, Math.min(W-grid/2, player.x));
-    player.y = Math.max(playHeight, Math.min(H-grid/2, player.y));
+    const minCenterY = playHeight + player.h/2;     // band top
+    const maxCenterY = Math.max(minCenterY, floorY - player.h/2); // band bottom
+    player.y = Math.max(minCenterY, Math.min(maxCenterY, player.y));
     // --- Firing: autofire ---
     player.fireCD = Math.max(0, player.fireCD - dt);
     if (fire && player.fireCD === 0){ shoot(); player.fireCD = 0.16; }
@@ -335,7 +492,9 @@
     for(const sp of spiders){
       if(!sp.alive) continue;
       sp.x += sp.vx*dt; sp.y += sp.vy*dt;
-      const minY=playHeight+grid, maxY=H-grid*1.2;
+      const minY = playHeight + grid;
+      let   maxY = floorY - grid*1.2;
+      if (maxY < minY) maxY = minY; // ensure valid range on ultra‑short screens
       if(sp.x<grid/2){ sp.x=grid/2; sp.vx*=-1; }
       if(sp.x>W-grid/2){ sp.x=W-grid/2; sp.vx*=-1; }
       if(sp.y<minY){ sp.y=minY; sp.vy*=-1; }
@@ -538,6 +697,19 @@
     for(let x=0;x<=W;x+=grid){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
     for(let y=0;y<=H;y+=grid){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
     ctx.globalAlpha = 1;
+    // Highlight the player movement band
+    if (floorY > playHeight) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(64,64,64,0.12)'; // subtle darker strip for player area
+      ctx.fillRect(0, playHeight, W, Math.max(0, floorY - playHeight));
+      ctx.restore();
+    }
+    // Divider line at the TOP of the player area (where centipede contact kills)
+    ctx.strokeStyle = '#444';
+    ctx.beginPath();
+    ctx.moveTo(0, playHeight);
+    ctx.lineTo(W, playHeight);
+    ctx.stroke();
     for (const m of mushrooms) {
       if (m.perm) {
         // Permanent obstacles: draw as rocks/asteroids
@@ -654,7 +826,7 @@
       ctx.fillRect(player.x-pw/2, player.y-ph/2, pw, ph);
       ctx.restore();
     }
-    ctx.strokeStyle='#333'; ctx.beginPath(); ctx.moveTo(0,playHeight); ctx.lineTo(W,playHeight); ctx.stroke();
+    ctx.strokeStyle='#333'; ctx.beginPath(); ctx.moveTo(0,floorY); ctx.lineTo(W,floorY); ctx.stroke();
     ctx.fillStyle='#fff'; for(const b of bullets){ ctx.fillRect(b.x-1,b.y-6,2,8); }
     for(const sp of spiders){ if(!sp.alive) continue; const r=sp.r; ctx.fillStyle='#221f2a'; ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI*2); ctx.fill(); ctx.fillStyle='#3a3347'; ctx.beginPath(); ctx.arc(sp.x + r*0.55, sp.y, r*0.55, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle='#6b5a87'; ctx.lineWidth=1; for(let side=-1; side<=1; side+=2){ for(let i=0;i<4;i++){ const t=(i-1.5)*0.5; const x1=sp.x + side*r*0.6; const y1=sp.y + t*r*0.5; const x2=sp.x + side*r*1.4; const y2=sp.y + t*r*0.6 + (i%2?3:-3); ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); } } }
     ctx.textAlign='center'; ctx.font='bold 14px system-ui';
@@ -671,9 +843,11 @@
   // --- Loop ---
   function loop(ts){ if(!lastTime) lastTime=ts; let dt=ts-lastTime; lastTime=ts; acc+=dt; while(acc>=step){ try{ update(step/1000); }catch(err){ showError(err); break; } acc-=step; } try{ draw(); }catch(err){ showError(err); } requestAnimationFrame(loop); }
   // --- Self-test & init ---
-  function selfTest(){ const ok=(n,c)=>console[(c?'log':'error')]((c?'✅ ':'❌ ')+n); ok('Canvas context', !!ctx); ok('RAF exists', !!window.requestAnimationFrame); ok('HUD present', !!resetBtn && !!toggleMusicBtn && !!toggleSfxBtn); }
+  function selfTest(){ const ok=(n,c)=>console[(c?'log':'error')]((c?'✅ ':'❌ ')+n); ok('Canvas context', !!ctx); ok('RAF exists', !!window.requestAnimationFrame); ok('HUD present', !!resetBtn && !!volumeBtn && !!pauseBtn && !!fireBtn); }
   window.gameDebug = { selfTest, start };
-  resetBtn.onclick = ()=> start(true);
+  resetBtn.onclick = ()=>{ fitCanvas(); recomputePlayHeight(); start(true); };
+  fitCanvas();
+  recomputePlayHeight();
   start(true);
   selfTest();
   requestAnimationFrame(loop);
