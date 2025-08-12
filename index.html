@@ -2,12 +2,78 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Cent80s v1.5</title>
   <style>
     html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     #wrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px}
-    canvas{background:#000;box-shadow:0 0 0 2px #333 inset, 0 8px 30px #000}
+    canvas{background:#000;box-shadow:0 0 0 2px #333 inset, 0 8px 30px #000;touch-action:none;image-rendering:pixelated;image-rendering:crisp-edges;display:block}
+    /* Mobile controls */
+    #mobileControls{
+      display:none;
+      gap:16px;
+      align-items:center;
+      justify-content:space-around;
+      width:100%;
+      max-width:700px;
+      padding:10px 14px;
+      position:fixed;
+      bottom:calc(18px + env(safe-area-inset-bottom)); /* sits above hint bar, reduced offset */
+      left:50%;
+      transform:translateX(-50%);
+      z-index:9999;
+      pointer-events:none;
+      background:none;
+      border-radius:10px 10px 0 0;
+      display:grid;
+      grid-template-columns:1fr auto 1fr;
+    }
+    #mobileControls > * { pointer-events:auto; }
+    /* Full-height bottom fade from top of controls */
+    :root { --controls-top: 100vh; }
+    :root { --controls-bottom-pad: 120px; }
+    #mobileControls::before {
+      content:'';
+      position:fixed;
+      left:0;
+      right:0;
+      top:var(--controls-top);
+      bottom:0;
+      background:linear-gradient(to bottom, rgba(0,0,0,0.25), rgba(0,0,0,0.55));
+      pointer-events:none;
+      z-index:-1;
+    }
+    #pad{width:120px;height:120px;border-radius:50%;background:#1a1a1a;border:1px solid #444;position:relative;touch-action:none}
+    #pad .nub{width:44px;height:44px;border-radius:50%;background:#2b2b2b;border:1px solid #555;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+    #pad:active{box-shadow:0 0 12px rgba(255,255,255,.08) inset;}
+    #fireBtn{min-width:60px;height:60px;border-radius:50%;background:#a22;border:1px solid #700;color:#fff;font-weight:700;font-size:13px;touch-action:none;box-shadow:0 2px 8px rgba(255,0,0,.25);opacity:.6}
+    #fireBtn:active{filter:brightness(1.1);box-shadow:0 0 14px rgba(255,60,60,.55);opacity:1}
+    /* Hint text */
+    #mobileHint{opacity:.7;font-size:12px;text-align:center}
+
+    /* Mobile-only placement for hint at bottom */
+    @media (max-width:700px){
+      #mobileHint{
+        position:fixed;
+        left:0; right:0;
+        bottom:env(safe-area-inset-bottom);
+        padding:6px 8px;
+        text-align:center;
+        z-index:9998;
+      }
+    }
+
+    @media (max-width: 700px){
+      html, body { height: 100svh; overflow: hidden; }
+      #mobileControls{display:flex}
+      #hud{gap:10px}
+      canvas{width:auto;height:auto}
+      #wrap{padding:8px}
+      button{padding:8px 10px}
+      #pad{width:100px;height:100px;}
+      #fireBtn{min-width:60px;height:60px;font-size:13px;}
+      #wrap{padding-bottom:calc(var(--controls-bottom-pad) + env(safe-area-inset-bottom));}
+    }
     #hud{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-weight:600}
     button{background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:6px 10px;cursor:pointer}
     button:hover{background:#2a2a2a}
@@ -22,11 +88,15 @@
       <div>Lives: <span id="lives">3</span></div>
       <div>Level: <span id="level">1</span></div>
       <button id="reset">Reset</button>
-      <button id="toggleMusic" class="toggle on">Music: On</button>
-      <button id="toggleSfx" class="toggle on">SFX: On</button>
+      <button id="toggleVolume" class="toggle on" title="Sound">🔊</button>
     </div>
     <canvas id="game" width="480" height="640"></canvas>
-    <div style="opacity:.7;font-size:12px">Arrows OR WASD to move • Space Bar to shoot</div>
+    <div id="mobileControls">
+      <div id="pad" aria-label="Move pad"><div class="nub"></div></div>
+      <button id="pauseBtn" aria-label="Pause">PAUSE</button>
+      <button id="fireBtn" aria-label="Fire">FIRE</button>
+    </div>
+    <div id="mobileHint">Arrows/WASD or Pad to move • Space/FIRE to shoot</div>
   </div>
 
 <script>
@@ -37,15 +107,82 @@
   document.title = 'Cent80s v' + VERSION;
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
+  // Mobile elements
+  const pad = document.getElementById('pad');
+  const padNub = pad ? pad.querySelector('.nub') : null;
+  const fireBtn = document.getElementById('fireBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  // Prevent scroll/zoom gestures while interacting with canvas/controls
+  ['touchstart','touchmove','touchend','gesturestart'].forEach(ev=>{
+    document.addEventListener(ev, e=>{
+      if(e.target===canvas || e.target===pad || e.target===fireBtn){ e.preventDefault(); }
+    }, {passive:false});
+  });
   const W = canvas.width, H = canvas.height;
+  function fitCanvas(){
+    const hud = document.getElementById('hud');
+    const controls = document.getElementById('mobileControls');
+    const hint = document.getElementById('mobileHint');
+    const hudH = hud ? hud.getBoundingClientRect().height : 0;
+    const controlsShown = controls && getComputedStyle(controls).display !== 'none';
+    const hintH = hint ? hint.getBoundingClientRect().height : 0;
+    const controlsH = controlsShown ? (controls.getBoundingClientRect().height + hintH + 8) : 0;
+    const availH = Math.max(100, window.innerHeight - hudH - controlsH - 12);
+    const availW = Math.max(120, document.documentElement.clientWidth - 20);
+    const s = Math.max(0.3, Math.min(availW / W, availH / H)); // uniform scale, no distortion
+    canvas.style.width = (W * s) + 'px';
+    canvas.style.height = (H * s) + 'px';
+  }
   const grid = 16;
-  const playHeight = H * 0.8;
+  let playHeight = H * 0.8;
+  const basePlayHeight = playHeight;
+  let uiBottomOffset = 0;
+  function recomputePlayHeight(){
+    const controls = document.getElementById('mobileControls');
+    const hint = document.getElementById('mobileHint');
+    const cRect = canvas.getBoundingClientRect();
+    const controlsShown = (controls && getComputedStyle(controls).display !== 'none');
+    // Export HUD height for CSS
+    const hud = document.getElementById('hud');
+    if (hud) document.documentElement.style.setProperty('--hud-height', hud.getBoundingClientRect().height + 'px');
+    const scale = canvas.height / cRect.height; // CSS px -> canvas px
+
+    let controlsTopCss = Infinity;
+    if (controlsShown){
+      const r = controls.getBoundingClientRect();
+      controlsTopCss = r.top;
+      const hintRect = hint ? hint.getBoundingClientRect() : {height:0};
+      const bottomPadPx = Math.ceil(r.height + 8 + hintRect.height);
+      document.documentElement.style.setProperty('--controls-bottom-pad', bottomPadPx + 'px');
+      document.documentElement.style.setProperty('--controls-top', r.top + 'px');
+    } else {
+      document.documentElement.style.setProperty('--controls-bottom-pad', '0px');
+    }
+
+    // Compute the lowest usable CSS pixel inside the viewport for the canvas
+    const viewportBottomCss = window.innerHeight;
+    // Start with the visible bottom of the canvas (in CSS px)
+    let usableBottomCss = Math.min(cRect.bottom, viewportBottomCss);
+    // If controls overlap the canvas, cap the usable bottom at the top of controls
+    if (controlsTopCss < usableBottomCss) usableBottomCss = controlsTopCss;
+
+    // Convert to canvas coordinates and leave a small safety margin
+    const marginCanvas = grid * 1.5;
+    const usableBottomCanvas = (usableBottomCss - cRect.top) * scale;
+    const desiredPlay = Math.min(H - grid - 1, Math.max(grid, usableBottomCanvas - marginCanvas));
+
+    // On tall layouts, don't exceed the classic baseline; on short layouts, raise the play line
+    playHeight = Math.min(basePlayHeight, desiredPlay);
+
+    // Store for reference/consistency
+    uiBottomOffset = Math.max(0, (H - playHeight));
+  }
+  window.addEventListener('resize', ()=>{ fitCanvas(); recomputePlayHeight(); });
   const scoreEl = document.getElementById('score');
   const livesEl = document.getElementById('lives');
   const levelEl = document.getElementById('level');
   const resetBtn = document.getElementById('reset');
-  const toggleMusicBtn = document.getElementById('toggleMusic');
-  const toggleSfxBtn = document.getElementById('toggleSfx');
+  const volumeBtn = document.getElementById('toggleVolume');
 
   // --- Error overlay ---
   let crashedMsg = null;
@@ -63,15 +200,33 @@
     musicGain = AC.createGain(); musicGain.gain.value = 0.35; musicGain.connect(masterGain);
     sfxGain   = AC.createGain(); sfxGain.gain.value   = 0.9;  sfxGain.connect(masterGain);
   }
-  function setToggleStyle(btn,on){
-    btn.classList.toggle('on',on);
-    btn.classList.toggle('off',!on);
-    btn.textContent = (btn===toggleMusicBtn?'Music: ':'SFX: ') + (on?'On':'Off');
+  function updateVolumeUI(){
+    const on = (musicOn || sfxOn);
+    if (volumeBtn){
+      volumeBtn.classList.toggle('on', on);
+      volumeBtn.classList.toggle('off', !on);
+      volumeBtn.textContent = on ? '🔊' : '🔇';
+    }
   }
-  setToggleStyle(toggleMusicBtn, musicOn);
-  setToggleStyle(toggleSfxBtn, sfxOn);
-  toggleMusicBtn.onclick = ()=>{ musicOn=!musicOn; setToggleStyle(toggleMusicBtn,musicOn); if(musicGain) musicGain.gain.value = musicOn?0.35:0; };
-  toggleSfxBtn.onclick   = ()=>{ sfxOn=!sfxOn;   setToggleStyle(toggleSfxBtn,  sfxOn);   if(sfxGain)   sfxGain.gain.value   = sfxOn?0.9:0; };
+  updateVolumeUI();
+  if (volumeBtn){
+    volumeBtn.onclick = ()=>{
+      const turningOff = (musicOn || sfxOn);
+      if (turningOff){
+        musicOn = false; sfxOn = false;
+        if (musicGain) musicGain.gain.value = 0;
+        if (sfxGain)   sfxGain.gain.value   = 0;
+        stopMusic();
+      } else {
+        musicOn = true; sfxOn = true;
+        ensureAudio();
+        if (musicGain) musicGain.gain.value = 0.35;
+        if (sfxGain)   sfxGain.gain.value   = 0.9;
+        if (!paused) startMusic();
+      }
+      updateVolumeUI();
+    };
+  }
   function armAudio(){ ensureAudio(); if(AC.state==='suspended') AC.resume(); if(musicOn && !musicTimer) startMusic(); }
   window.addEventListener('pointerdown', armAudio);
   window.addEventListener('keydown', armAudio);
@@ -212,6 +367,7 @@
 
   // --- Game State ---
   let keys=new Set(), bullets=[], mushrooms=[], centipede=[], spiders=[];
+  let paused = false;
   let screenFlash = 0;
   let spiderTimer=0, spiderDelay=0;
   let player, score, displayScore, lives, level, gameOver, waveCleared, playerDead, deathTimer;
@@ -233,13 +389,60 @@
   function updateHUD(){ scoreEl.textContent=displayScore|0; livesEl.textContent=lives|0; levelEl.textContent=level|0; }
 
   // --- Input ---
+  function press(k){ keys.add(k); }
+  function release(k){ keys.delete(k); }
+
+  function setMoveFromVector(dx, dy){
+    // Clear existing WASD keys first
+    ['a','d','w','s','arrowleft','arrowright','arrowup','arrowdown'].forEach(release);
+    if(dx<-0.2) press('a'); else if(dx>0.2) press('d');
+    if(dy<-0.2) press('w'); else if(dy>0.2) press('s');
+  }
+
   window.addEventListener('keydown', e=>{ keys.add(e.key.toLowerCase()); if(e.key===' ') e.preventDefault(); });
   window.addEventListener('keyup', e=> keys.delete(e.key.toLowerCase()));
   function shoot(){ bullets.push({x:player.x, y:player.y-player.h/2, vy:-420}); sfxShoot(); }
   function collide(a,b,rad){ const dx=a.x-b.x, dy=a.y-b.y; return (dx*dx+dy*dy) <= (rad*rad); }
 
+  // --- Mobile controls ---
+  if (pad){
+    let active=false, cx=0, cy=0, r=50;
+    const getPos = (clientX, clientY)=>{
+      const rect = pad.getBoundingClientRect();
+      const x = clientX - (rect.left + rect.width/2);
+      const y = clientY - (rect.top + rect.height/2);
+      const max = r; // max radius for full deflection
+      const mag = Math.hypot(x,y) || 1;
+      const clamped = Math.min(mag, max);
+      let dx = (x/mag) * clamped / max;
+      let dy = (y/mag) * clamped / max;
+      // 10% dead-zone to avoid drift
+      if (clamped/max < 0.10){ dx = 0; dy = 0; }
+      return {dx, dy, px:(dx*max), py:(dy*max)};
+    };
+    const start = (x,y)=>{ active=true; const v=getPos(x,y); setMoveFromVector(v.dx, v.dy); if(padNub){ padNub.style.transform=`translate(calc(-50% + ${v.px}px), calc(-50% + ${v.py}px))`; } };
+    const move  = (x,y)=>{ if(!active) return; const v=getPos(x,y); setMoveFromVector(v.dx, v.dy); if(padNub){ padNub.style.transform=`translate(calc(-50% + ${v.px}px), calc(-50% + ${v.py}px))`; } };
+    const end   = ()=>{ active=false; setMoveFromVector(0,0); if(padNub){ padNub.style.transform='translate(-50%,-50%)'; } };
+
+    pad.addEventListener('pointerdown', e=>{ pad.setPointerCapture(e.pointerId); start(e.clientX, e.clientY); });
+    pad.addEventListener('pointermove', e=> move(e.clientX, e.clientY));
+    pad.addEventListener('pointerup',   end);
+    pad.addEventListener('pointercancel', end);
+  }
+
+  if (fireBtn){
+    let firing=false, fireTimer=null;
+    const start=()=>{ firing=true; press(' '); armAudio(); if(!fireTimer){ fireTimer=setInterval(()=> press(' '), 160); } };
+    const end=()=>{ firing=false; release(' '); if(fireTimer){ clearInterval(fireTimer); fireTimer=null; } };
+    fireBtn.addEventListener('pointerdown', e=>{ fireBtn.setPointerCapture(e.pointerId); start(); e.preventDefault(); });
+    fireBtn.addEventListener('pointerup',   end);
+    fireBtn.addEventListener('pointercancel', end);
+    fireBtn.addEventListener('pointerleave', end);
+  }
+
   // --- Update ---
   function update(dt){
+    if (paused) return;
     if(gameOver) return;
     if (playerDead) {
       deathTimer -= dt;
@@ -671,12 +874,34 @@
   // --- Loop ---
   function loop(ts){ if(!lastTime) lastTime=ts; let dt=ts-lastTime; lastTime=ts; acc+=dt; while(acc>=step){ try{ update(step/1000); }catch(err){ showError(err); break; } acc-=step; } try{ draw(); }catch(err){ showError(err); } requestAnimationFrame(loop); }
   // --- Self-test & init ---
-  function selfTest(){ const ok=(n,c)=>console[(c?'log':'error')]((c?'✅ ':'❌ ')+n); ok('Canvas context', !!ctx); ok('RAF exists', !!window.requestAnimationFrame); ok('HUD present', !!resetBtn && !!toggleMusicBtn && !!toggleSfxBtn); }
+  function selfTest(){ const ok=(n,c)=>console[(c?'log':'error')]((c?'✅ ':'❌ ')+n); ok('Canvas context', !!ctx); ok('RAF exists', !!window.requestAnimationFrame); ok('HUD present', !!resetBtn && !!volumeBtn); }
   window.gameDebug = { selfTest, start };
   resetBtn.onclick = ()=> start(true);
   start(true);
+  fitCanvas();
+  recomputePlayHeight();
   selfTest();
+  if (pauseBtn){
+    pauseBtn.addEventListener('click', ()=>{
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'RESUME' : 'PAUSE';
+      if (paused) { stopMusic(); } else { startMusic(); }
+    });
+  }
   requestAnimationFrame(loop);
+  window.addEventListener('orientationchange', ()=> setTimeout(recomputePlayHeight, 50));
+  window.addEventListener('load', ()=> setTimeout(recomputePlayHeight, 50));
+
+  // Stabilize play height for the first ~600ms to catch late layout shifts
+  (function(){
+    let t0 = performance.now();
+    function tick(){
+      fitCanvas();
+      recomputePlayHeight();
+      if (performance.now() - t0 < 600) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  })();
 })();
 </script>
 </body>
